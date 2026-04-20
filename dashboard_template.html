@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Robot Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --cmu-red: #C41230;
+            --tartan-gray: #1A1919;
+            --iron-gray: #6D6E71;
+            --white: #FFFFFF;
+            --bg-color: #0b0b0b;
+            --console-bg: #111111;
+            --status-green: #2ecc71;
+            --status-yellow: #f1c40f;
+            --status-red: #e74c3c;
+            --text-main: #e0e0e0;
+            --text-dim: #888;
+        }
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        /* Main Viewport */
+        .viewport {
+            position: relative;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            overflow: hidden;
+        }
+        #viewer-canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        /* Dashboard Console */
+        .dashboard {
+            min-height: fit-content;
+            background: var(--console-bg);
+            border-top: 1px solid #333;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            padding: 15px 30px;
+            gap: 20px;
+            z-index: 100;
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            overflow: hidden;
+        }
+
+        .panel-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            font-weight: 600;
+        }
+
+        .panel-value {
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            overflow-wrap: break-word;
+        }
+
+        .pulse {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--status-green);
+            flex-shrink: 0;
+        }
+        .pulse.inactive {
+            background: var(--status-red);
+        }
+
+        /* Info/Warning Panel */
+        #info-panel {
+            border-left: 1px solid #333;
+            padding-left: 20px;
+        }
+        .warning-text {
+            color: var(--status-yellow);
+        }
+
+        /* Action Buttons */
+        .actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-left: auto;
+        }
+        button {
+            padding: 10px 20px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid #444;
+            background: #222;
+            color: #eee;
+        }
+        button:hover {
+            background: #333;
+            border-color: #666;
+        }
+        button:active {
+            transform: translateY(1px);
+            filter: brightness(0.9);
+        }
+        #stop-btn {
+            background: var(--cmu-red);
+            border-color: var(--cmu-red);
+            color: white;
+        }
+        #stop-btn:hover {
+            filter: brightness(1.1);
+            border-color: var(--cmu-red);
+        }
+
+        /* Conclusion Overlay */
+        #conclusion-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="viewport">
+        <div id="conclusion-overlay"></div>
+        <canvas id="viewer-canvas" width="${canvas_width}" height="${canvas_height}"></canvas>
+    </div>
+
+    <div class="dashboard">
+        <div class="panel">
+            <div class="panel-label">Robot Status</div>
+            <div class="panel-value" id="status-panel">&nbsp;</div>
+        </div>
+
+        <div class="panel" id="info-panel">
+            <div class="panel-label">Info</div>
+            <div class="panel-value" id="info-text">&nbsp;</div>
+        </div>
+
+        <div class="actions">
+            <!-- Hidden LED for status logic -->
+            <div class="pulse" id="status-led" style="display: none;"></div>
+            <button id="stop-btn">STOP</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('viewer-canvas');
+        const ctx = canvas.getContext('2d');
+        const stopBtn = document.getElementById('stop-btn');
+
+        const statusPanel = document.getElementById('status-panel');
+        const infoText = document.getElementById('info-text');
+        const statusLed = document.getElementById('status-led');
+        const conclusionOverlay = document.getElementById('conclusion-overlay');
+
+        // Apply templated config variables (wrapped in strings to avoid linter syntax errors)
+        const exitOpacity = parseFloat("${exit_darkening_opacity}") || 0.8;
+        conclusionOverlay.style.background = `rgba(0, 0, 0, ${exitOpacity})`;
+
+        let frameErrors = 0;
+        let statusErrors = 0;
+        let isStopped = false;
+        let isDisconnectedShown = false;
+
+        async function updateFrame() {
+            if (frameErrors >= 20) return;
+            try {
+                const img = new Image();
+                img.onload = () => {
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    frameErrors = 0;
+                };
+                img.onerror = () => frameErrors++;
+                img.src = "/frame?t=" + Date.now();
+            } catch(e) {
+                frameErrors++;
+            }
+            requestAnimationFrame(updateFrame);
+        }
+
+        async function updateStatus() {
+            try {
+                const response = await fetch('/status');
+                if (response.ok) {
+                    // Reconnection handled natively by HTTP success
+                    conclusionOverlay.style.display = 'none';
+                    isDisconnectedShown = false;
+                    statusErrors = 0;
+
+                    const data = await response.json();
+
+                    // Update Robot Status
+                    let stateName = (data.controller || "IDLE").trim().toUpperCase();
+                    if (stateName === "USER_CONTROL" || stateName === "USER") stateName = "USER";
+                    else if (stateName === "EMERGENCY_STOP" || stateName === "STOP") stateName = "STOP";
+                    else if (stateName === "HIBERNATING") stateName = "HIBERNATING";
+                    statusPanel.textContent = stateName;
+
+                    // Update Info Panel
+                    if (data.warning) {
+                        infoText.innerHTML = `<span class="warning-text">$${data.warning}</span>`;
+                    } else if (data.overlay) {
+                        infoText.textContent = data.overlay;
+                    } else {
+                        // Fallback defaults based on state
+                        if (stateName === "USER") {
+                            infoText.textContent = "Controlled by user inputs.";
+                        } else if (stateName === "STOP") {
+                            infoText.textContent = "Stopped by user.";
+                        } else {
+                            infoText.textContent = "Actively holding current position.";
+                        }
+                    }
+
+                    // Update LED and Button Text
+                    if (data.stopped) {
+                        isStopped = true;
+                        statusLed.className = 'pulse inactive';
+                        stopBtn.textContent = "Release & Reset";
+                        stopBtn.style.background = "var(--status-green)";
+                        stopBtn.style.borderColor = "var(--status-green)";
+                    } else {
+                        isStopped = false;
+                        statusLed.className = 'pulse';
+                        stopBtn.disabled = false;
+                        stopBtn.textContent = "STOP";
+                        stopBtn.style.background = "var(--cmu-red)";
+                        stopBtn.style.borderColor = "var(--cmu-red)";
+                    }
+
+                } else {
+                    statusErrors++;
+                    if (statusErrors >= 4) showDisconnected();
+                }
+            } catch (e) {
+                statusErrors++;
+                if (statusErrors >= 4) showDisconnected();
+            }
+            // Continuous heartbeat: Never give up polling, even if server dies
+            // This ensures instant reconnection when a new script starts
+            const hrMs = parseInt("${heartrate_ms}", 10) || 1000;
+            setTimeout(updateStatus, hrMs);
+        }
+
+        function showDisconnected() {
+            if (isDisconnectedShown) return;
+            isDisconnectedShown = true;
+
+            // Show full-screen overlay
+            conclusionOverlay.style.display = 'flex';
+
+            // Disable interactions
+            stopBtn.disabled = true;
+            stopBtn.style.opacity = '0.5';
+            stopBtn.style.cursor = 'not-allowed';
+
+            // Status update
+            statusLed.className = 'pulse inactive';
+            statusPanel.textContent = "OFFLINE";
+            infoText.textContent = "Control script closed.";
+        }
+
+        stopBtn.addEventListener('click', async () => {
+            const oldText = stopBtn.textContent;
+            stopBtn.disabled = true;
+            stopBtn.textContent = "Processing...";
+
+            try {
+                const response = await fetch('/command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: isStopped ? 'reset' : 'stop' })
+                });
+
+                if (!response.ok) {
+                    stopBtn.disabled = false;
+                    stopBtn.textContent = oldText;
+                }
+            } catch (e) {
+                stopBtn.disabled = false;
+                stopBtn.textContent = oldText;
+            }
+        });
+
+
+        updateFrame();
+        updateStatus();
+    </script>
+</body>
+</html>
+

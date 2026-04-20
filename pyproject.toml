@@ -1,0 +1,11 @@
+[project]
+name = "assignment"
+version = "0.1.0"
+description = "16-711 Kinematics Dynamics and Control — Assignment"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "mujoco",
+    "pillow",
+]
