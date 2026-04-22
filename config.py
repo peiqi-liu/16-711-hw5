@@ -85,14 +85,19 @@ BARRIER_CENTER = np.array([0.8, 0.0, 1.05])
 BARRIER_HALF   = np.array([0.2, 0.02, 0.15])
 BARRIER_TOP_Z  = 1.20
 
-DROP_BOX_CENTER = np.array([0.6, -0.4, 0.9])
+DROP_BOX_CENTER = np.array([0.5, -0.2, 0.9])
 DROP_BOX_FLOOR_Z = 0.92  # top surface of box bottom
 
 # Item initial positions (left side, y > 0)
+# ITEM_POSITIONS = {
+#     "item1": np.array([0.5, 0.3, 0.95]),   # cuboid  4x4x4 cm
+#     "item2": np.array([0.6, 0.4, 0.95]),   # cylinder r=2cm h=4cm
+#     "item3": np.array([0.7, 0.3, 0.95]),   # sphere   r=2cm
+# }
 ITEM_POSITIONS = {
-    "item1": np.array([0.5, 0.3, 0.95]),   # cuboid  4x4x4 cm
-    "item2": np.array([0.6, 0.4, 0.95]),   # cylinder r=2cm h=4cm
-    "item3": np.array([0.7, 0.3, 0.95]),   # sphere   r=2cm
+    "item1": np.array([0.45, 0.25, 0.925]),   # cuboid
+    "item2": np.array([0.25, 0.50, 0.925]),   # cylinder
+    "item3": np.array([0.925, 0.25, 0.925]),  # sphere 
 }
 
 # Item geometric dimensions (half-extents or radii)

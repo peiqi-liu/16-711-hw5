@@ -223,5 +223,72 @@ def inverse_kinematics(
     #   - Use np.clip(q, JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER).
     #   - Print convergence info for debugging: iteration, ||e||.
     # ==========================================================================
-    raise NotImplementedError("TODO 2.1: Implement inverse_kinematics()")
+    target_pos = np.asarray(target_pos, dtype=float)
+    q = np.clip(np.asarray(q_init, dtype=float).copy(), JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER)
+
+    if target_rot is not None:
+        target_rot = np.asarray(target_rot, dtype=float)
+
+    if target_rot is not None:
+        current_pos, _ = forward_kinematics(q)
+        if np.linalg.norm(target_pos - current_pos) > 0.05:
+            q = inverse_kinematics(
+                target_pos,
+                q,
+                target_rot=None,
+                max_iter=min(250, max_iter // 3),
+                tol=max(tol, 5e-3),
+            )
+
+    damping = 0.05 if target_rot is None else 0.08
+    alpha = 0.5 if target_rot is None else 0.35
+    step_limit = 0.2
+    q_mid = 0.5 * (JOINT_LIMITS_LOWER + JOINT_LIMITS_UPPER)
+
+    best_q = q.copy()
+    best_err_norm = np.inf
+
+    for _ in range(max_iter):
+        current_pos, current_rot = forward_kinematics(q)
+        pos_error = target_pos - current_pos
+
+        if target_rot is None:
+            error = pos_error
+            J = jacobian(q)[:3, :]
+            pos_err_norm = np.linalg.norm(pos_error)
+        else:
+            skew = 0.5 * (target_rot @ current_rot.T - current_rot @ target_rot.T)
+            ori_error = np.array([skew[2, 1], skew[0, 2], skew[1, 0]])
+
+            ori_weight = 0.35
+            error = np.concatenate((pos_error, ori_weight * ori_error))
+            J = jacobian(q)
+            J = J.copy()
+            J[3:, :] *= ori_weight
+            pos_err_norm = np.linalg.norm(pos_error)
+            ori_err_norm = np.linalg.norm(ori_error)
+
+        err_norm = np.linalg.norm(error)
+        if err_norm < best_err_norm:
+            best_err_norm = err_norm
+            best_q = q.copy()
+
+        if err_norm < tol:
+            return q
+        if target_rot is None and pos_err_norm < max(tol, 5e-3):
+            return q
+        if target_rot is not None and pos_err_norm < 1e-2 and ori_err_norm < 3e-2:
+            return q
+
+        jj_t = J @ J.T + (damping ** 2) * np.eye(J.shape[0])
+        dq = J.T @ np.linalg.solve(jj_t, error)
+        dq += 0.01 * (q_mid - q)
+
+        dq_norm = np.linalg.norm(dq)
+        if dq_norm > step_limit:
+            dq *= step_limit / dq_norm
+
+        q = np.clip(q + alpha * dq, JOINT_LIMITS_LOWER, JOINT_LIMITS_UPPER)
+
+    return best_q
     # ===== END TODO 2.1 =======================================================

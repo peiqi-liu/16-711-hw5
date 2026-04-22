@@ -14,15 +14,17 @@ from time import perf_counter, sleep
 import numpy as np
 
 from interface import RemoteRobotArm
-from controller import BaseController
+from controller import BaseController, NOMINAL_JOINT_DAMPING, nominal_gravity_torque
 from kinematics import forward_kinematics, jacobian, inverse_kinematics
 from trajectory import QuinticTrajectory
 from config import (
+    CONFIG,
     BARRIER_TOP_Z,
     DROP_BOX_CENTER,
     DROP_BOX_FLOOR_Z,
     ITEM_POSITIONS,
     ITEM_DIMS,
+    MAX_TORQUES,
 )
 from utils import Logger
 
@@ -31,9 +33,15 @@ from utils import Logger
 #  Constants
 # ======================================================================
 
-CLEARANCE_Z = BARRIER_TOP_Z + 0.10  # safe height above barrier [m]
-APPROACH_OFFSET_Z = 0.08             # height above object for approach [m]
+CLEARANCE_Z = BARRIER_TOP_Z + 0.25  # safe height above barrier [m]
+APPROACH_OFFSET_Z = 0.2             # height above object for approach [m]
 SEGMENT_DURATION = 2.0               # default time per trajectory segment [s]
+GRASP_SETTLE_TIME = 0.35             # hold time after grasp / release [s]
+PLACE_HOLD_TIME = 0.20               # hold time before release [s]
+HAND_ACTUATION_TIME = 2.25           # time to close/open Barrett hand [s]
+HAND_MAX_SPREAD_RATE = 0.55          # max spread command rate [rad/s]
+HAND_MAX_CURL_RATE = 0.80            # max finger curl command rate [rad/s]
+HAND_ARM_DAMPING_SCALE = 0.35        # passive arm damping during finger motion
 
 # Palm-down end-effector orientation (world frame).
 # Use as ``target_rot`` in ``inverse_kinematics`` so the palm faces
@@ -43,6 +51,18 @@ PALM_DOWN = np.array([
     [0.0, -1.0,  0.0],
     [0.0,  0.0, -1.0],
 ])
+
+
+def _object_half_height(object_name: str) -> float:
+    dims = ITEM_DIMS[object_name]
+    shape = dims["shape"]
+    if shape == "cuboid":
+        return float(dims["half_size"][2])
+    if shape == "cylinder":
+        return float(dims["half_height"])
+    if shape == "sphere":
+        return float(dims["radius"])
+    raise ValueError(f"Unsupported object shape: {shape}")
 
 
 # ======================================================================
@@ -127,6 +147,93 @@ def execute_trajectory(
             sleep(idle)
 
 
+def _prime_arm_state(arm: RemoteRobotArm) -> np.ndarray:
+    """Advance one control step so the state cache reflects the simulator."""
+    arm.set_trq(np.zeros(7))
+    arm.step()
+    return arm.get_pos()
+
+
+def _reset_controller_state(controller: BaseController) -> None:
+    """Reset controller memory when entering a new motion phase, if supported."""
+    reset_fn = getattr(controller, "reset_state", None)
+    if callable(reset_fn):
+        reset_fn()
+
+
+def _hold_configuration(
+    arm: RemoteRobotArm,
+    controller: BaseController,
+    q_hold: np.ndarray,
+    duration: float,
+) -> np.ndarray:
+    """Hold the current configuration for a short settling period."""
+    q_hold = np.asarray(q_hold, dtype=float)
+    dq_des = np.zeros(7)
+    ddq_des = np.zeros(7)
+    tau = np.zeros(7)
+    start = clock = perf_counter()
+
+    while perf_counter() - start < duration:
+        q = arm.get_pos()
+        dq = arm.get_vel()
+        tau = controller.compute_torque(q, dq, q_hold, dq_des, ddq_des)
+        arm.set_trq(tau)
+        arm.step()
+
+        clock += 0.002
+        idle = clock - perf_counter()
+        if idle > 0:
+            sleep(idle)
+
+    return arm.get_pos()
+
+
+def _execute_pick_place_segments(
+    arm: RemoteRobotArm,
+    controller: BaseController,
+    trajectories: list[QuinticTrajectory],
+    object_name: str,
+    logger: Logger | None = None,
+    hand: BarrettHandController | None = None,
+    pre_release_hold: float = PLACE_HOLD_TIME,
+    post_release_hold: float = GRASP_SETTLE_TIME,
+) -> np.ndarray:
+    """Execute the six-segment pick/place motion with grasp and release."""
+    if len(trajectories) != 6:
+        raise ValueError(f"Expected 6 trajectory segments, got {len(trajectories)}")
+
+    shape = ITEM_DIMS[object_name]["shape"]
+
+    for idx, traj in enumerate(trajectories):
+        # Re-anchor every segment at the measured current configuration.
+        # This avoids reference jumps after grasp/release contact events and
+        # makes the start of each new segment dynamically consistent.
+        q_start = arm.get_pos().copy()
+        exec_traj = QuinticTrajectory(q_start, traj.q_end, traj.duration, t_start=0.0)
+        _reset_controller_state(controller)
+        execute_trajectory(arm, controller, exec_traj, logger=logger)
+        q_current = arm.get_pos()
+
+        if idx == 1:
+            if hand is None:
+                arm.attach(object_name)
+            else:
+                hand.execute_grasp(arm, hand.plan_grasp(shape))
+            _reset_controller_state(controller)
+            q_current = _hold_configuration(arm, controller, q_current, GRASP_SETTLE_TIME)
+        elif idx == 4:
+            q_current = _hold_configuration(arm, controller, q_current, pre_release_hold)
+            if hand is None:
+                arm.detach()
+            else:
+                hand.execute_release(arm)
+            _reset_controller_state(controller)
+            q_current = _hold_configuration(arm, controller, q_current, post_release_hold)
+
+    return arm.get_pos()
+
+
 # ======================================================================
 #  Question 2 — Pick and Place
 # ======================================================================
@@ -202,7 +309,39 @@ class PickAndPlaceTask(BaseTask):
         # relative to each segment (starting at 0), since execute_trajectory()
         # resets its own clock for each segment.
         # =====================================================================
-        raise NotImplementedError("TODO 2.2: Implement PickAndPlaceTask.plan_cartesian_path()")
+        pick_pos = np.asarray(pick_pos, dtype=float)
+        place_pos = np.asarray(place_pos, dtype=float)
+        q_current = np.asarray(q_current, dtype=float)
+
+        waypoints = [
+            pick_pos + np.array([0.0, 0.0, APPROACH_OFFSET_Z]),
+            pick_pos.copy(),
+            np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
+            np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
+            place_pos.copy(),
+            np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
+        ]
+
+        joint_waypoints = [q_current.copy()]
+        # joint_waypoints = []
+        q_seed = q_current.copy()
+        for waypoint in waypoints:
+            q_seed = inverse_kinematics(waypoint, q_seed, target_rot=PALM_DOWN)
+            joint_waypoints.append(q_seed.copy())
+
+        cart_waypoints = [forward_kinematics(q_current)[0], *waypoints]
+        trajectories: list[QuinticTrajectory] = []
+
+        for i in range(len(joint_waypoints) - 1):
+            q_start = joint_waypoints[i]
+            q_end = joint_waypoints[i + 1]
+            cart_dist = np.linalg.norm(cart_waypoints[i + 1] - cart_waypoints[i])
+            joint_dist = np.linalg.norm(q_end - q_start)
+            duration = SEGMENT_DURATION * max(cart_dist / 0.4, joint_dist / 1.5, 0.5)
+            duration = float(np.clip(duration, 1.0, 4.0))
+            trajectories.append(QuinticTrajectory(q_start, q_end, duration, t_start=0.0))
+
+        return trajectories
         # ===== END TODO 2.2 ==================================================
 
     def execute(
@@ -251,7 +390,47 @@ class PickAndPlaceTask(BaseTask):
         #   - A short sleep (0.3-0.5 s) after grasp/release helps the
         #     simulator settle.
         # =====================================================================
-        raise NotImplementedError("TODO 2.3: Implement PickAndPlaceTask.execute()")
+        q_plan = CONFIG.robot.home_pos.copy()
+
+        place_targets = {
+            "item1": np.array([
+                DROP_BOX_CENTER[0],
+                DROP_BOX_CENTER[1],
+                DROP_BOX_FLOOR_Z + _object_half_height("item1"),
+            ]),
+            "item2": np.array([
+                DROP_BOX_CENTER[0],
+                DROP_BOX_CENTER[1],
+                DROP_BOX_FLOOR_Z + _object_half_height("item2"),
+            ]),
+            "item3": np.array([
+                DROP_BOX_CENTER[0],
+                DROP_BOX_CENTER[1],
+                DROP_BOX_FLOOR_Z + _object_half_height("item3"),
+            ]),
+        }
+
+        planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
+        for object_name in ("item1", "item2", "item3"):
+            pick_pos = ITEM_POSITIONS[object_name].copy()
+            pick_pos[-1] += _object_half_height(object_name)
+            place_pos = place_targets[object_name]
+            trajectories = self.plan_cartesian_path(pick_pos, place_pos, q_plan)
+            planned_cycles.append((object_name, trajectories))
+            q_plan = trajectories[-1].q_end.copy()
+
+        q_current = _prime_arm_state(arm)
+        for object_name, trajectories in planned_cycles:
+            q_current = _execute_pick_place_segments(
+                arm,
+                controller,
+                trajectories,
+                object_name,
+                logger=logger,
+                hand=hand,
+            )
+
+        return True
         # ===== END TODO 2.3 ==================================================
 
 
@@ -300,7 +479,29 @@ class StackingTask(BaseTask):
         #   item2 (cylinder) centre z = item1_top + cylinder_half_height
         #   item3 (sphere) centre z   = item2_top + sphere_radius
         # =====================================================================
-        raise NotImplementedError("TODO 3.1: Implement StackingTask.compute_stack_poses()")
+        # Bias the stack slightly toward the far side of the drop box so the
+        # placed objects are farther from the box walls and barrier-facing side.
+        stack_xy = DROP_BOX_CENTER[:2].copy() + np.array([0.0, -0.04])
+
+        item1_half = _object_half_height("item1")
+        item2_half = _object_half_height("item2")
+        item3_half = _object_half_height("item3")
+
+        item1_z = DROP_BOX_FLOOR_Z + item1_half
+        item1_top = item1_z + item1_half
+
+        # Seat upper objects a few millimetres deeper so release happens into
+        # light contact instead of slightly above the support surface.
+        item2_z = item1_top + item2_half - 0.004
+        item2_top = item2_z + item2_half
+
+        item3_z = item2_top + item3_half - 0.003
+
+        return {
+            "item1": np.array([stack_xy[0], stack_xy[1], item1_z]),
+            "item2": np.array([stack_xy[0], stack_xy[1], item2_z]),
+            "item3": np.array([stack_xy[0], stack_xy[1], item3_z]),
+        }
         # ===== END TODO 3.1 ==================================================
 
     def execute(
@@ -351,7 +552,48 @@ class StackingTask(BaseTask):
         # Tip:  You can instantiate PickAndPlaceTask and call its
         #       plan_cartesian_path() method for reuse.
         # =====================================================================
-        raise NotImplementedError("TODO 3.2: Implement StackingTask.execute()")
+        planner = PickAndPlaceTask()
+        stack_targets = self.compute_stack_poses()
+
+        q_plan = CONFIG.robot.home_pos.copy()
+        planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
+        for object_name in ("item1", "item2", "item3"):
+            pick_pos = ITEM_POSITIONS[object_name].copy()
+            pick_pos[-1] += _object_half_height(object_name)
+            place_pos = stack_targets[object_name]
+            base_trajectories = planner.plan_cartesian_path(pick_pos, place_pos, q_plan)
+            trajectories = []
+            for idx, traj in enumerate(base_trajectories):
+                duration_scale = 1.0
+                if idx in (4, 5):
+                    duration_scale = 1.6
+                elif idx in (2, 3):
+                    duration_scale = 1.2
+                trajectories.append(
+                    QuinticTrajectory(
+                        traj.q_start,
+                        traj.q_end,
+                        traj.duration * duration_scale,
+                        t_start=0.0,
+                    )
+                )
+            planned_cycles.append((object_name, trajectories))
+            q_plan = trajectories[-1].q_end.copy()
+
+        q_current = _prime_arm_state(arm)
+        for object_name, trajectories in planned_cycles:
+            q_current = _execute_pick_place_segments(
+                arm,
+                controller,
+                trajectories,
+                object_name,
+                logger=logger,
+                hand=hand,
+                pre_release_hold=PLACE_HOLD_TIME + 0.20,
+                post_release_hold=GRASP_SETTLE_TIME + 0.40,
+            )
+
+        return True
         # ===== END TODO 3.2 ==================================================
 
 
@@ -387,6 +629,84 @@ class BarrettHandController:
         dist_joint:  [0, 0.838]    rad   (coupled — do not command directly)
     """
 
+    def __init__(self):
+        self._current_cmd = {
+            "spread": 0.0,
+            "curl_1": 0.0,
+            "curl_2": 0.0,
+            "curl_3": 0.0,
+        }
+
+    def reset_state(self) -> None:
+        """Reset the hand controller's internal command / hold state."""
+        self._current_cmd = {
+            "spread": 0.0,
+            "curl_1": 0.0,
+            "curl_2": 0.0,
+            "curl_3": 0.0,
+        }
+
+    @staticmethod
+    def _sanitize_cmd(cmd: dict) -> dict:
+        return {
+            "spread": float(np.clip(cmd["spread"], 0.0, np.pi)),
+            "curl_1": float(np.clip(cmd["curl_1"], 0.0, 2.443)),
+            "curl_2": float(np.clip(cmd["curl_2"], 0.0, 2.443)),
+            "curl_3": float(np.clip(cmd["curl_3"], 0.0, 2.443)),
+        }
+
+    def _move_fingers(self, arm: RemoteRobotArm, target_cmd: dict, duration: float = HAND_ACTUATION_TIME) -> None:
+        """Interpolate finger targets using a slow, rate-limited motion."""
+        target_cmd = self._sanitize_cmd(target_cmd)
+        start_cmd = self._sanitize_cmd(self._current_cmd)
+        start = clock = perf_counter()
+        dt = 0.002
+        cmd = start_cmd.copy()
+
+        while True:
+            elapsed = perf_counter() - start
+            alpha = min(1.0, elapsed / max(duration, dt))
+            # Quintic time-scaling gives zero velocity and acceleration at the
+            # endpoints, which makes finger closure/opening much gentler.
+            smooth_alpha = 10.0 * alpha**3 - 15.0 * alpha**4 + 6.0 * alpha**5
+
+            desired_cmd = {
+                key: start_cmd[key] + smooth_alpha * (target_cmd[key] - start_cmd[key])
+                for key in start_cmd
+            }
+            # Apply an additional per-step rate limit so the fingers cannot
+            # snap closed from a large target update or timing jitter.
+            rate_limits = {
+                "spread": HAND_MAX_SPREAD_RATE,
+                "curl_1": HAND_MAX_CURL_RATE,
+                "curl_2": HAND_MAX_CURL_RATE,
+                "curl_3": HAND_MAX_CURL_RATE,
+            }
+            for key, limit in rate_limits.items():
+                max_step = limit * dt
+                delta = desired_cmd[key] - cmd[key]
+                cmd[key] += float(np.clip(delta, -max_step, max_step))
+
+            arm.set_finger_pos(cmd["spread"], cmd["curl_1"], cmd["curl_2"], cmd["curl_3"])
+            q = arm.get_pos()
+            dq = arm.get_vel()
+            tau_support = (
+                -nominal_gravity_torque(q)
+                - HAND_ARM_DAMPING_SCALE * NOMINAL_JOINT_DAMPING * dq
+            )
+            arm.set_trq(np.clip(tau_support, -MAX_TORQUES, MAX_TORQUES))
+            arm.step()
+
+            if alpha >= 1.0:
+                break
+
+            clock += dt
+            idle = clock - perf_counter()
+            if idle > 0:
+                sleep(idle)
+
+        self._current_cmd = target_cmd
+
     def plan_grasp(self, object_shape: str) -> dict:
         """Plan finger joint targets for grasping an object of given shape.
 
@@ -414,7 +734,29 @@ class BarrettHandController:
         #   - The spread angle determines the aperture between fingers 1 & 2.
         #   - Wider spread for larger objects, narrower for small ones.
         # =====================================================================
-        raise NotImplementedError("TODO 4.1: Implement BarrettHandController.plan_grasp()")
+        grasps = {
+            "cuboid": {
+                "spread": 1.05,
+                "curl_1": 1.65,
+                "curl_2": 1.65,
+                "curl_3": 1.50,
+            },
+            "cylinder": {
+                "spread": 1.20,
+                "curl_1": 1.35,
+                "curl_2": 1.35,
+                "curl_3": 1.20,
+            },
+            "sphere": {
+                "spread": 0.90,
+                "curl_1": 1.10,
+                "curl_2": 1.10,
+                "curl_3": 0.95,
+            },
+        }
+        if object_shape not in grasps:
+            raise ValueError(f"Unsupported object shape: {object_shape}")
+        return self._sanitize_cmd(grasps[object_shape])
         # ===== END TODO 4.1 ===================================================
 
     def execute_grasp(self, arm: RemoteRobotArm, grasp_config: dict) -> None:
@@ -441,7 +783,7 @@ class BarrettHandController:
         #   - Use your setpoint or tracking controller to compute
         #     hold_torques for the current arm configuration.
         # =====================================================================
-        raise NotImplementedError("TODO 4.2: Implement BarrettHandController.execute_grasp()")
+        self._move_fingers(arm, grasp_config, duration=HAND_ACTUATION_TIME)
         # ===== END TODO 4.2 ===================================================
 
     def execute_release(self, arm: RemoteRobotArm) -> None:
@@ -456,5 +798,9 @@ class BarrettHandController:
         # Open the fingers by interpolating all DOF toward 0.
         # Same gradual approach as execute_grasp().
         # =====================================================================
-        raise NotImplementedError("TODO 4.2: Implement BarrettHandController.execute_release()")
+        self._move_fingers(
+            arm,
+            {"spread": 0.0, "curl_1": 0.0, "curl_2": 0.0, "curl_3": 0.0},
+            duration=HAND_ACTUATION_TIME,
+        )
         # ===== END TODO 4.2 ===================================================

@@ -46,6 +46,16 @@ from utils import (
 DT = CONFIG.physics_dt              # 0.002 s  (500 Hz)
 SETTLE_TIME = 2.0                   # seconds to wait after arm.reset()
 
+TASK_TRACK_KP = np.array([180.0, 320.0, 110.0, 220.0, 30.0, 40.0, 8.0])
+TASK_TRACK_KD = np.array([24.0, 42.0, 18.0, 24.0, 4.5, 5.5, 1.2])
+
+
+def _make_task_tracking_controller() -> TrajectoryTrackingController:
+    """Use milder gains for contact-heavy manipulation tasks."""
+    controller = TrajectoryTrackingController(kp=TASK_TRACK_KP, kd=TASK_TRACK_KD)
+    controller.reset_state()
+    return controller
+
 
 # ======================================================================
 #  Question 1a — Setpoint Control
@@ -98,7 +108,37 @@ def run_setpoint_control(duration: float = 10.0) -> Logger:
     #   - Initialise tau = np.zeros(7) before the loop.
     #   - Wrap in try/except KeyboardInterrupt for clean exit.
     # =========================================================================
-    raise NotImplementedError("TODO 1.2: Implement the setpoint control loop")
+    tau = np.zeros(7)
+    start_time = clock = perf_counter()
+
+    try:
+        while (elapsed := perf_counter() - start_time) < duration:
+            arm.set_trq(tau)
+            arm.step()
+
+            q = arm.get_pos()
+            dq = arm.get_vel()
+
+            tau = controller.compute_torque(q, dq, Q_TARGET_1A)
+            ee_pos, _ = forward_kinematics(q)
+            log.record(
+                t=elapsed,
+                q=q,
+                dq=dq,
+                q_des=Q_TARGET_1A,
+                tau=tau,
+                ee_pos=ee_pos,
+            )
+
+            clock += DT
+            sleep(max(0.0, clock - perf_counter()))
+    except KeyboardInterrupt:
+        print("\n[Q1a] Interrupted by user.")
+    finally:
+        try:
+            arm.set_trq(np.zeros(7))
+        except Exception:
+            pass
     # ===== END TODO 1.2 ======================================================
 
     return log
@@ -110,7 +150,8 @@ def run_setpoint_control(duration: float = 10.0) -> Logger:
 
 # Two-segment trajectory: home -> target -> home
 Q_HOME = CONFIG.robot.home_pos
-Q_TARGET_1B = np.array([-0.5, 1.2, 0.3, 1.8, -0.2, 0.5, 0.0])
+# Q_TARGET_1B = np.array([-0.5, 1.2, 0.3, 1.8, -0.2, 0.5, 0.0])
+Q_TARGET_1B = np.array([0.3, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0])
 TRAJ_DURATION = 3.0   # seconds per segment
 
 
@@ -152,7 +193,41 @@ def run_trajectory_tracking(duration: float = 10.0) -> Logger:
     #
     # The loop structure is the same as TODO 1.2.
     # =========================================================================
-    raise NotImplementedError("TODO 1.5: Implement the trajectory tracking loop")
+    tau = np.zeros(7)
+    arm.set_trq(tau)
+    arm.step()
+    start_time = clock = perf_counter()
+
+    try:
+        while (t_sim := perf_counter() - start_time) < duration:
+            q = arm.get_pos()
+            dq = arm.get_vel()
+            state = seg1.evaluate(t_sim) if t_sim < TRAJ_DURATION else seg2.evaluate(t_sim)
+
+            tau = controller.compute_torque(q, dq, state.q, state.dq, state.ddq)
+            ee_pos, _ = forward_kinematics(q)
+            log.record(
+                t=t_sim,
+                q=q,
+                dq=dq,
+                q_des=state.q,
+                dq_des=state.dq,
+                tau=tau,
+                ee_pos=ee_pos,
+            )
+
+            arm.set_trq(tau)
+            arm.step()
+
+            clock += DT
+            sleep(max(0.0, clock - perf_counter()))
+    except KeyboardInterrupt:
+        print("\n[Q1b] Interrupted by user.")
+    finally:
+        try:
+            arm.set_trq(np.zeros(7))
+        except Exception:
+            pass
     # ===== END TODO 1.5 ======================================================
 
     return log
@@ -173,9 +248,7 @@ def run_pick_and_place() -> Logger:
     arm.reset()
     sleep(SETTLE_TIME)
 
-    controller = TrajectoryTrackingController(
-        # ---- use your tuned gains from Q1b ----
-    )
+    controller = _make_task_tracking_controller()
 
     log = Logger()
     task = PickAndPlaceTask()
@@ -199,9 +272,7 @@ def run_stacking() -> Logger:
     arm.reset()
     sleep(SETTLE_TIME)
 
-    controller = TrajectoryTrackingController(
-        # ---- use your tuned gains from Q1b ----
-    )
+    controller = _make_task_tracking_controller()
 
     log = Logger()
     task = StackingTask()
@@ -230,11 +301,10 @@ def run_bonus() -> Logger:
     arm.reset()
     sleep(SETTLE_TIME)
 
-    controller = TrajectoryTrackingController(
-        # ---- use your tuned gains ----
-    )
+    controller = _make_task_tracking_controller()
 
     hand = BarrettHandController()
+    hand.reset_state()
     log = Logger()
 
     # --- Redo Q2 with finger grasping ---
@@ -246,6 +316,9 @@ def run_bonus() -> Logger:
     print("[Bonus] Running stacking with Barrett Hand...")
     arm.reset()
     sleep(SETTLE_TIME)
+    controller = _make_task_tracking_controller()
+    hand = BarrettHandController()
+    hand.reset_state()
     stack_task = StackingTask()
     stack_task.execute(arm, controller, logger=log, hand=hand)
 

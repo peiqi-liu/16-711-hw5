@@ -93,5 +93,29 @@ class QuinticTrajectory:
         # Return:
         #     TrajectoryState(q=q_des, dq=dq_des, ddq=ddq_des)
         # =====================================================================
-        raise NotImplementedError("TODO 1.3: Implement QuinticTrajectory.evaluate()")
+        if t <= self.t_start:
+            return TrajectoryState(
+                q=self.q_start.copy(),
+                dq=np.zeros_like(self.q_start),
+                ddq=np.zeros_like(self.q_start),
+            )
+
+        if t >= self.t_end:
+            return TrajectoryState(
+                q=self.q_end.copy(),
+                dq=np.zeros_like(self.q_end),
+                ddq=np.zeros_like(self.q_end),
+            )
+
+        s = np.clip((t - self.t_start) / self.duration, 0.0, 1.0)
+
+        h = 10.0 * s**3 - 15.0 * s**4 + 6.0 * s**5
+        h_dot = 30.0 * s**2 - 60.0 * s**3 + 30.0 * s**4
+        h_ddot = 60.0 * s - 180.0 * s**2 + 120.0 * s**3
+
+        q_des = self.q_start + self._delta * h
+        dq_des = self._delta * h_dot / self.duration
+        ddq_des = self._delta * h_ddot / (self.duration**2)
+
+        return TrajectoryState(q=q_des, dq=dq_des, ddq=ddq_des)
         # ===== END TODO 1.3 ==================================================
