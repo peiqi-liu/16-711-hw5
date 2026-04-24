@@ -236,7 +236,7 @@ class TrajectoryTrackingController:
             [330.0, 660.0, 210.0, 390.0, 54.0, 66.0, 15.0]
         )
         self.kd = np.asarray(kd) if kd is not None else np.array(
-            [20.0, 25.0, 15.0, 15.0, 7.5, 7.5, 2.0]
+            [14.0, 24.0, 12.0, 15.0, 5.0, 7.0, 3.0]
         )
         self.ki = np.array([0.5, 8.0, 1.0, 6.0, 0.5, 1.0, 0.1])
         self._nominal_inertia = 0.8 * NOMINAL_REFLECTED_INERTIA
