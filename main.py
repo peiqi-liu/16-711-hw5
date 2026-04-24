@@ -62,7 +62,7 @@ def _make_task_tracking_controller() -> TrajectoryTrackingController:
 # ======================================================================
 
 # Target joint configuration (a clearly different pose from home)
-Q_TARGET_1A = np.array([0.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0])
+Q_TARGET_1A = np.array([0.3, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0])
 
 
 def run_setpoint_control(duration: float = 10.0) -> Logger:

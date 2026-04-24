@@ -233,23 +233,23 @@ class TrajectoryTrackingController:
         # The nominal damping / reflected inertia come from ``robot_manual.md``
         # and are used as a lightweight model-based feedforward.
         self.kp = np.asarray(kp) if kp is not None else np.array(
-            [330.0, 660.0, 210.0, 390.0, 54.0, 66.0, 15.0]
+            [330.0, 660.0, 210.0, 390.0, 8.0,  10.0,   4.0]
         )
         self.kd = np.asarray(kd) if kd is not None else np.array(
-            [14.0, 24.0, 12.0, 15.0, 4.0, 6.0, 1.0]
+            [14.0, 24.0, 12.0, 15.0, 3.0,   3.5,   1.0]
         )
-        self.ki = np.array([0.5, 8.0, 1.0, 6.0, 0.5, 1.0, 0.1])
+        self.ki = np.array([0.5, 8.0, 1.0, 6.0,  0.0,   0.0,   0.0])
         self._nominal_inertia = 0.8 * NOMINAL_REFLECTED_INERTIA
         self._nominal_damping = 0.6 * NOMINAL_JOINT_DAMPING
         self._gravity_ff_scale = 1.0
         self._dt = 0.002
         self._int_error = np.zeros(7)
-        self._int_limit = np.array([0.04, 0.10, 0.04, 0.08, 0.04, 0.05, 0.03])
+        self._int_limit = np.array([0.04, 0.10, 0.04, 0.08,  0.0,   0.0,   0.0])
 
         # Limit how quickly torque can change to avoid the velocity spikes
         # that were tripping the simulator, while still letting the arm move.
         self._prev_tau = np.zeros(7)
-        self._tau_rate_limit = np.array([12.0, 14.0, 6.0, 7.0, 2.5, 2.5, 0.6])
+        self._tau_rate_limit = np.array([10.0, 12.0,  5.0,  6.0,   0.15,  0.15,  0.08])
 
     def compute_torque(
         self,

@@ -11,6 +11,7 @@ manipulation primitive.  Students implement the TODO methods; the
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from time import perf_counter, sleep
+import threading
 import numpy as np
 
 from interface import RemoteRobotArm
@@ -154,6 +155,14 @@ def _prime_arm_state(arm: RemoteRobotArm) -> np.ndarray:
     return arm.get_pos()
 
 
+def _keep_alive_loop(arm: RemoteRobotArm, tau: np.ndarray, stop: threading.Event) -> None:
+    """Send hold torques at ~25 Hz so the server doesn't time out during planning."""
+    while not stop.is_set():
+        arm.set_trq(tau)
+        arm.step()
+        stop.wait(0.04)
+
+
 def _reset_controller_state(controller: BaseController) -> None:
     """Reset controller memory when entering a new motion phase, if supported."""
     reset_fn = getattr(controller, "reset_state", None)
@@ -199,9 +208,6 @@ def _execute_pick_place_segments(
     pre_release_hold: float = PLACE_HOLD_TIME,
     post_release_hold: float = GRASP_SETTLE_TIME,
 ) -> np.ndarray:
-    """Execute the six-segment pick/place motion with grasp and release."""
-    if len(trajectories) != 6:
-        raise ValueError(f"Expected 6 trajectory segments, got {len(trajectories)}")
 
     shape = ITEM_DIMS[object_name]["shape"]
 
@@ -215,14 +221,14 @@ def _execute_pick_place_segments(
         execute_trajectory(arm, controller, exec_traj, logger=logger)
         q_current = arm.get_pos()
 
-        if idx == 1:
+        if idx == 2:
             if hand is None:
                 arm.attach(object_name)
             else:
                 hand.execute_grasp(arm, hand.plan_grasp(shape))
             _reset_controller_state(controller)
             q_current = _hold_configuration(arm, controller, q_current, GRASP_SETTLE_TIME)
-        elif idx == 4:
+        elif idx == 5:
             q_current = _hold_configuration(arm, controller, q_current, pre_release_hold)
             if hand is None:
                 arm.detach()
@@ -314,6 +320,7 @@ class PickAndPlaceTask(BaseTask):
         q_current = np.asarray(q_current, dtype=float)
 
         waypoints = [
+            np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
             pick_pos + np.array([0.0, 0.0, APPROACH_OFFSET_Z]),
             pick_pos.copy(),
             np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
@@ -351,83 +358,28 @@ class PickAndPlaceTask(BaseTask):
         logger: Logger | None = None,
         hand: BarrettHandController | None = None,
     ) -> bool:
-        """Execute the full pick-and-place task for all three objects.
-
-        Args:
-            arm:        robot interface (already connected and reset).
-            controller: a trajectory-tracking controller.
-            logger:     optional data logger.
-            hand:       optional Barrett Hand controller.  When ``None``,
-                        grasping uses ``arm.attach()`` / ``arm.detach()``.
-                        When provided, uses ``hand.execute_grasp()`` /
-                        ``hand.execute_release()`` for finger-based grasping.
-
-        Returns:
-            ``True`` on success.
-        """
-        # ===== TODO 2.3 ======================================================
-        # Orchestrate the complete pick-and-place sequence.
-        #
-        # For each item ("item1", "item2", "item3"):
-        #   1. Determine pick position from ITEM_POSITIONS.
-        #   2. Determine place position (e.g. DROP_BOX_CENTER with appropriate z).
-        #   3. Call self.plan_cartesian_path(pick, place, q_current).
-        #   4. Execute trajectory segments using execute_trajectory().
-        #   5. Grasp / release the object:
-        #        if hand is None:
-        #            arm.attach(object_name)   /  arm.detach()
-        #        else:
-        #            shape = ITEM_DIMS[object_name]["shape"]
-        #            grasp_cfg = hand.plan_grasp(shape)
-        #            hand.execute_grasp(arm, grasp_cfg)
-        #            ...
-        #            hand.execute_release(arm)
-        #   6. Update q_current from arm.get_pos() after each segment.
-        #
-        # Remember:
-        #   - Grasp after lowering to the object.
-        #   - Release after lowering to the place position.
-        #   - A short sleep (0.3-0.5 s) after grasp/release helps the
-        #     simulator settle.
-        # =====================================================================
-        q_plan = CONFIG.robot.home_pos.copy()
-
         place_targets = {
-            "item1": np.array([
-                DROP_BOX_CENTER[0],
-                DROP_BOX_CENTER[1],
-                DROP_BOX_FLOOR_Z + _object_half_height("item1"),
-            ]),
-            "item2": np.array([
-                DROP_BOX_CENTER[0],
-                DROP_BOX_CENTER[1],
-                DROP_BOX_FLOOR_Z + _object_half_height("item2"),
-            ]),
-            "item3": np.array([
-                DROP_BOX_CENTER[0],
-                DROP_BOX_CENTER[1],
-                DROP_BOX_FLOOR_Z + _object_half_height("item3"),
-            ]),
+            "item1": np.array([DROP_BOX_CENTER[0], DROP_BOX_CENTER[1],
+                            DROP_BOX_FLOOR_Z + _object_half_height("item1")]),
+            "item2": np.array([DROP_BOX_CENTER[0], DROP_BOX_CENTER[1],
+                            DROP_BOX_FLOOR_Z + _object_half_height("item2")]),
+            "item3": np.array([DROP_BOX_CENTER[0], DROP_BOX_CENTER[1],
+                            DROP_BOX_FLOOR_Z + _object_half_height("item3")]),
         }
 
-        planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
+        q_current = _prime_arm_state(arm)
+
         for object_name in ("item1", "item2", "item3"):
+            # Plan fresh from actual arm state each time
             pick_pos = ITEM_POSITIONS[object_name].copy()
             pick_pos[-1] += _object_half_height(object_name)
             place_pos = place_targets[object_name]
-            trajectories = self.plan_cartesian_path(pick_pos, place_pos, q_plan)
-            planned_cycles.append((object_name, trajectories))
-            q_plan = trajectories[-1].q_end.copy()
 
-        q_current = _prime_arm_state(arm)
-        for object_name, trajectories in planned_cycles:
+            trajectories = self.plan_cartesian_path(pick_pos, place_pos, q_current)
+
             q_current = _execute_pick_place_segments(
-                arm,
-                controller,
-                trajectories,
-                object_name,
-                logger=logger,
-                hand=hand,
+                arm, controller, trajectories, object_name,
+                logger=logger, hand=hand,
             )
 
         return True
