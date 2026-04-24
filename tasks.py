@@ -33,8 +33,8 @@ from utils import Logger
 #  Constants
 # ======================================================================
 
-CLEARANCE_Z = BARRIER_TOP_Z + 0.25  # safe height above barrier [m]
-APPROACH_OFFSET_Z = 0.2             # height above object for approach [m]
+CLEARANCE_Z = BARRIER_TOP_Z + 0.3   # safe height above barrier [m]
+APPROACH_OFFSET_Z = 0.22            # height above object for approach [m]
 SEGMENT_DURATION = 2.0               # default time per trajectory segment [s]
 GRASP_SETTLE_TIME = 0.35             # hold time after grasp / release [s]
 PLACE_HOLD_TIME = 0.20               # hold time before release [s]
@@ -42,6 +42,8 @@ HAND_ACTUATION_TIME = 2.25           # time to close/open Barrett hand [s]
 HAND_MAX_SPREAD_RATE = 0.55          # max spread command rate [rad/s]
 HAND_MAX_CURL_RATE = 0.80            # max finger curl command rate [rad/s]
 HAND_ARM_DAMPING_SCALE = 0.35        # passive arm damping during finger motion
+STARTUP_STAGE_Y = 0.55               # safer y position before first pick [m]
+STARTUP_LIFT_EXTRA = 0.10            # extra initial lift above current ee z [m]
 
 # Palm-down end-effector orientation (world frame).
 # Use as ``target_rot`` in ``inverse_kinematics`` so the palm faces
@@ -159,6 +161,30 @@ def _reset_controller_state(controller: BaseController) -> None:
     reset_fn = getattr(controller, "reset_state", None)
     if callable(reset_fn):
         reset_fn()
+
+
+def _plan_startup_egress(q_start: np.ndarray) -> list[QuinticTrajectory]:
+    """Move up first, then retreat in +y before the first pick.
+
+    The nominal home pose sits close to the object cluster in this setup.
+    A direct trajectory from home toward the first approach pose can sweep
+    through the sphere, so we first lift vertically and then move to a
+    safer staging pose on the positive-y side of the workspace.
+    """
+    q_start = np.asarray(q_start, dtype=float)
+    ee_start, _ = forward_kinematics(q_start)
+
+    lift_z = max(CLEARANCE_Z, float(ee_start[2] + STARTUP_LIFT_EXTRA))
+    lift_pos = np.array([ee_start[0], ee_start[1], lift_z])
+    stage_pos = np.array([ee_start[0], STARTUP_STAGE_Y, CLEARANCE_Z])
+
+    q_lift = inverse_kinematics(lift_pos, q_start, target_rot=PALM_DOWN)
+    q_stage = inverse_kinematics(stage_pos, q_lift, target_rot=PALM_DOWN)
+
+    return [
+        QuinticTrajectory(q_start, q_lift, 2.0, t_start=0.0),
+        QuinticTrajectory(q_lift, q_stage, 2.5, t_start=0.0),
+    ]
 
 
 def _hold_configuration(
@@ -338,7 +364,11 @@ class PickAndPlaceTask(BaseTask):
             cart_dist = np.linalg.norm(cart_waypoints[i + 1] - cart_waypoints[i])
             joint_dist = np.linalg.norm(q_end - q_start)
             duration = SEGMENT_DURATION * max(cart_dist / 0.4, joint_dist / 1.5, 0.5)
-            duration = float(np.clip(duration, 1.0, 4.0))
+            # Give the vertical lift and over-barrier transfer more time so
+            # modest tracking lag still leaves geometric clearance.
+            if i in (2, 3):
+                duration *= 1.8
+            duration = float(np.clip(duration, 1.0, 5.0))
             trajectories.append(QuinticTrajectory(q_start, q_end, duration, t_start=0.0))
 
         return trajectories
@@ -391,6 +421,8 @@ class PickAndPlaceTask(BaseTask):
         #     simulator settle.
         # =====================================================================
         q_plan = CONFIG.robot.home_pos.copy()
+        startup_trajs = _plan_startup_egress(q_plan)
+        q_plan = startup_trajs[-1].q_end.copy()
 
         place_targets = {
             "item1": np.array([
@@ -420,6 +452,10 @@ class PickAndPlaceTask(BaseTask):
             q_plan = trajectories[-1].q_end.copy()
 
         q_current = _prime_arm_state(arm)
+        for traj in startup_trajs:
+            _reset_controller_state(controller)
+            execute_trajectory(arm, controller, traj, logger=logger)
+            q_current = arm.get_pos()
         for object_name, trajectories in planned_cycles:
             q_current = _execute_pick_place_segments(
                 arm,
@@ -556,6 +592,8 @@ class StackingTask(BaseTask):
         stack_targets = self.compute_stack_poses()
 
         q_plan = CONFIG.robot.home_pos.copy()
+        startup_trajs = _plan_startup_egress(q_plan)
+        q_plan = startup_trajs[-1].q_end.copy()
         planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
         for object_name in ("item1", "item2", "item3"):
             pick_pos = ITEM_POSITIONS[object_name].copy()
@@ -581,6 +619,10 @@ class StackingTask(BaseTask):
             q_plan = trajectories[-1].q_end.copy()
 
         q_current = _prime_arm_state(arm)
+        for traj in startup_trajs:
+            _reset_controller_state(controller)
+            execute_trajectory(arm, controller, traj, logger=logger)
+            q_current = arm.get_pos()
         for object_name, trajectories in planned_cycles:
             q_current = _execute_pick_place_segments(
                 arm,

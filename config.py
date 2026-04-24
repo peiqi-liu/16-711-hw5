@@ -90,13 +90,13 @@ DROP_BOX_FLOOR_Z = 0.92  # top surface of box bottom
 
 # Item initial positions (left side, y > 0)
 # ITEM_POSITIONS = {
-#     "item1": np.array([0.5, 0.3, 0.95]),   # cuboid  4x4x4 cm
-#     "item2": np.array([0.6, 0.4, 0.95]),   # cylinder r=2cm h=4cm
-#     "item3": np.array([0.7, 0.3, 0.95]),   # sphere   r=2cm
+#     "item1": np.array([0.45, 0.25, 0.925]),   # cuboid
+#     "item2": np.array([0.25, 0.50, 0.925]),   # cylinder
+#     "item3": np.array([0.925, 0.25, 0.925]),  # sphere 
 # }
 ITEM_POSITIONS = {
     "item1": np.array([0.45, 0.25, 0.925]),   # cuboid
-    "item2": np.array([0.25, 0.50, 0.925]),   # cylinder
+    "item2": np.array([0.56, 0.49, 0.925]),   # cylinder
     "item3": np.array([0.925, 0.25, 0.925]),  # sphere 
 }
 

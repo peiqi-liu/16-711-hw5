@@ -52,7 +52,8 @@ TASK_TRACK_KD = np.array([24.0, 42.0, 18.0, 24.0, 4.5, 5.5, 1.2])
 
 def _make_task_tracking_controller() -> TrajectoryTrackingController:
     """Use milder gains for contact-heavy manipulation tasks."""
-    controller = TrajectoryTrackingController(kp=TASK_TRACK_KP, kd=TASK_TRACK_KD)
+    # controller = TrajectoryTrackingController(kp=TASK_TRACK_KP, kd=TASK_TRACK_KD)
+    controller = TrajectoryTrackingController()
     controller.reset_state()
     return controller
 
@@ -247,7 +248,6 @@ def run_pick_and_place() -> Logger:
     arm = RemoteRobotArm()
     arm.reset()
     sleep(SETTLE_TIME)
-
     controller = _make_task_tracking_controller()
 
     log = Logger()
@@ -271,7 +271,6 @@ def run_stacking() -> Logger:
     arm = RemoteRobotArm()
     arm.reset()
     sleep(SETTLE_TIME)
-
     controller = _make_task_tracking_controller()
 
     log = Logger()
@@ -300,7 +299,6 @@ def run_bonus() -> Logger:
     arm = RemoteRobotArm()
     arm.reset()
     sleep(SETTLE_TIME)
-
     controller = _make_task_tracking_controller()
 
     hand = BarrettHandController()
