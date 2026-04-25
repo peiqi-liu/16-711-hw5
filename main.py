@@ -172,6 +172,8 @@ def run_trajectory_tracking(duration: float = 10.0) -> Logger:
 
     controller = TrajectoryTrackingController(
         # ---- set your gains here ----
+        kp = np.array([330.0, 660.0, 210.0, 390.0, 54.0, 66.0, 15.0]),
+        kd = np.array([14.0, 24.0, 12.0, 15.0, 4.0, 6.0, 1.0])
     )
 
     # Build the two-segment trajectory

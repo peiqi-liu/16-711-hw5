@@ -35,6 +35,7 @@ from utils import Logger
 
 CLEARANCE_Z = BARRIER_TOP_Z + 0.3   # safe height above barrier [m]
 APPROACH_OFFSET_Z = 0.22            # height above object for approach [m]
+PICK_OFSET_Z = 0.1
 SEGMENT_DURATION = 2.0               # default time per trajectory segment [s]
 GRASP_SETTLE_TIME = 0.35             # hold time after grasp / release [s]
 PLACE_HOLD_TIME = 0.20               # hold time before release [s]
@@ -183,7 +184,7 @@ def _plan_startup_egress(q_start: np.ndarray) -> list[QuinticTrajectory]:
 
     return [
         QuinticTrajectory(q_start, q_lift, 2.0, t_start=0.0),
-        QuinticTrajectory(q_lift, q_stage, 2.5, t_start=0.0),
+        # QuinticTrajectory(q_lift, q_stage, 2.5, t_start=0.0),
     ]
 
 
@@ -341,10 +342,10 @@ class PickAndPlaceTask(BaseTask):
 
         waypoints = [
             pick_pos + np.array([0.0, 0.0, APPROACH_OFFSET_Z]),
-            pick_pos.copy(),
+            pick_pos + np.array([0.0, 0.0, PICK_OFSET_Z]),
             np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
             np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
-            place_pos.copy(),
+            place_pos + np.array([0.0, 0.0, PICK_OFSET_Z]),
             np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
         ]
 
