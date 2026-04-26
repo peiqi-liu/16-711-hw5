@@ -46,15 +46,11 @@ from utils import (
 DT = CONFIG.physics_dt              # 0.002 s  (500 Hz)
 SETTLE_TIME = 2.0                   # seconds to wait after arm.reset()
 
-TASK_TRACK_KP = np.array([180.0, 320.0, 110.0, 220.0, 30.0, 40.0, 8.0])
-TASK_TRACK_KD = np.array([24.0, 42.0, 18.0, 24.0, 4.5, 5.5, 1.2])
-
 
 def _make_task_tracking_controller() -> TrajectoryTrackingController:
     """Use milder gains for contact-heavy manipulation tasks."""
-    # controller = TrajectoryTrackingController(kp=TASK_TRACK_KP, kd=TASK_TRACK_KD)
     controller = TrajectoryTrackingController()
-    controller.reset_state()
+    controller.reset_state(reset_torque_memory=True)
     return controller
 
 

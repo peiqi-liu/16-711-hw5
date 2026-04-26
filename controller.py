@@ -241,15 +241,16 @@ class TrajectoryTrackingController:
         self.ki = np.array([0.5, 8.0, 1.0, 6.0, 0.5, 1.0, 0.1])
         self._nominal_inertia = 0.8 * NOMINAL_REFLECTED_INERTIA
         self._nominal_damping = 0.6 * NOMINAL_JOINT_DAMPING
-        self._gravity_ff_scale = 1.0
+        self._gravity_ff_scale = 0
         self._dt = 0.002
         self._int_error = np.zeros(7)
-        self._int_limit = np.array([0.04, 0.10, 0.04, 0.08, 0.04, 0.05, 0.03])
+        self._int_limit = np.zeros(7)
+        # self._int_limit = np.array([0.04, 0.10, 0.04, 0.08, 0.04, 0.05, 0.03])
 
         # Limit how quickly torque can change to avoid the velocity spikes
         # that were tripping the simulator, while still letting the arm move.
         self._prev_tau = np.zeros(7)
-        self._tau_rate_limit = np.array([12.0, 14.0, 6.0, 7.0, 2.5, 2.5, 0.6])
+        self._tau_rate_limit = np.array([12.0, 14.0, 6.0, 5.0, 2.0, 2.0, 0.5])
 
     def compute_torque(
         self,
@@ -312,20 +313,23 @@ class TrajectoryTrackingController:
         tau_ff = (
             self._nominal_inertia * ddq_des
             + self._nominal_damping * dq_des
-            - self._gravity_ff_scale * nominal_gravity_torque(q)
+            + self._gravity_ff_scale * nominal_gravity_torque(q)
         )
-        tau_raw = tau_fb + tau_ff
+        # tau_raw = tau_fb + tau_ff
+        tau_raw = tau_fb
         tau_slew_limited = np.clip(
             tau_raw,
             self._prev_tau - self._tau_rate_limit,
             self._prev_tau + self._tau_rate_limit,
         )
         tau = np.clip(tau_slew_limited, -MAX_TORQUES, MAX_TORQUES)
+        # tau = np.clip(tau_raw, -MAX_TORQUES, MAX_TORQUES)
         self._prev_tau = tau
         return tau
         # ===== END TODO 1.4 ==================================================
 
-    def reset_state(self) -> None:
-        """Clear controller memory after hard resets or mode switches."""
-        self._prev_tau[:] = 0.0
+    def reset_state(self, reset_torque_memory: bool = True) -> None:
+        """Clear accumulated error, optionally clearing torque slew memory."""
         self._int_error[:] = 0.0
+        if reset_torque_memory:
+            self._prev_tau[:] = 0.0

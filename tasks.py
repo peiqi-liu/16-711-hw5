@@ -33,7 +33,7 @@ from utils import Logger
 #  Constants
 # ======================================================================
 
-CLEARANCE_Z = BARRIER_TOP_Z + 0.3   # safe height above barrier [m]
+CLEARANCE_Z = BARRIER_TOP_Z + 0.25   # safe height above barrier [m]
 APPROACH_OFFSET_Z = 0.22            # height above object for approach [m]
 PICK_OFSET_Z = 0.1
 SEGMENT_DURATION = 2.0               # default time per trajectory segment [s]
@@ -150,10 +150,11 @@ def execute_trajectory(
             sleep(idle)
 
 
-def _prime_arm_state(arm: RemoteRobotArm) -> np.ndarray:
+def _prime_arm_state(arm: RemoteRobotArm, attempts: int = 3) -> np.ndarray:
     """Advance one control step so the state cache reflects the simulator."""
-    arm.set_trq(np.zeros(7))
-    arm.step()
+    for _ in range(attempts):
+        arm.set_trq(np.zeros(7))
+        arm.step()
     return arm.get_pos()
 
 
@@ -342,11 +343,15 @@ class PickAndPlaceTask(BaseTask):
 
         waypoints = [
             pick_pos + np.array([0.0, 0.0, APPROACH_OFFSET_Z]),
-            pick_pos + np.array([0.0, 0.0, PICK_OFSET_Z]),
-            np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
-            np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
-            place_pos + np.array([0.0, 0.0, PICK_OFSET_Z]),
-            np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
+            # np.array([0.35, 0.25, CLEARANCE_Z]),
+            pick_pos,
+            # np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
+            np.array([0.35, 0.25, CLEARANCE_Z]),
+            # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
+            np.array([0.35, -0.25, CLEARANCE_Z]),
+            place_pos,
+            # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
+            np.array([0.35, 0.25, CLEARANCE_Z]),
         ]
 
         joint_waypoints = [q_current.copy()]
@@ -421,6 +426,8 @@ class PickAndPlaceTask(BaseTask):
         #   - A short sleep (0.3-0.5 s) after grasp/release helps the
         #     simulator settle.
         # =====================================================================
+        # Match the more stable ordered-stacking startup: plan from the known
+        # reset pose, then execute a short egress before the first pick.
         q_plan = CONFIG.robot.home_pos.copy()
         startup_trajs = _plan_startup_egress(q_plan)
         q_plan = startup_trajs[-1].q_end.copy()

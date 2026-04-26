@@ -89,16 +89,16 @@ DROP_BOX_CENTER = np.array([0.5, -0.2, 0.9])
 DROP_BOX_FLOOR_Z = 0.92  # top surface of box bottom
 
 # Item initial positions (left side, y > 0)
-# ITEM_POSITIONS = {
-#     "item1": np.array([0.45, 0.25, 0.925]),   # cuboid
-#     "item2": np.array([0.25, 0.50, 0.925]),   # cylinder
-#     "item3": np.array([0.925, 0.25, 0.925]),  # sphere 
-# }
 ITEM_POSITIONS = {
     "item1": np.array([0.45, 0.25, 0.925]),   # cuboid
-    "item2": np.array([0.56, 0.49, 0.925]),   # cylinder
+    "item2": np.array([0.25, 0.50, 0.925]),   # cylinder
     "item3": np.array([0.925, 0.25, 0.925]),  # sphere 
 }
+# ITEM_POSITIONS = {
+#     "item1": np.array([0.45, 0.25, 0.925]),   # cuboid
+#     "item2": np.array([0.56, 0.49, 0.925]),   # cylinder
+#     "item3": np.array([0.925, 0.25, 0.925]),  # sphere 
+# }
 
 # Item geometric dimensions (half-extents or radii)
 ITEM_DIMS = {
