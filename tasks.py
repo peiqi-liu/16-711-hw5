@@ -33,7 +33,7 @@ from utils import Logger
 #  Constants
 # ======================================================================
 
-CLEARANCE_Z = BARRIER_TOP_Z + 0.25   # safe height above barrier [m]
+CLEARANCE_Z = BARRIER_TOP_Z + 0.15   # safe height above barrier [m]
 APPROACH_OFFSET_Z = 0.22            # height above object for approach [m]
 PICK_OFSET_Z = 0.1
 SEGMENT_DURATION = 2.0               # default time per trajectory segment [s]
@@ -162,6 +162,7 @@ def _plan_palm_waypoint_path(
     q_current: np.ndarray,
     waypoints: list[np.ndarray],
     slow_indices: tuple[int, ...] = (),
+    target_rots: list[np.ndarray | None] | None = None,
 ) -> list[QuinticTrajectory]:
     """Plan joint trajectories through palm-center Cartesian waypoints."""
     q_current = np.asarray(q_current, dtype=float)
@@ -169,9 +170,12 @@ def _plan_palm_waypoint_path(
     joint_waypoints = [q_current.copy()]
     q_seed = q_current.copy()
 
-    for waypoint in waypoints:
+    if target_rots is None:
+        target_rots = [PALM_DOWN] * len(waypoints)
+
+    for waypoint, target_rot in zip(waypoints, target_rots):
         waypoint = np.asarray(waypoint, dtype=float)
-        q_seed = inverse_kinematics(waypoint, q_seed, target_rot=PALM_DOWN)
+        q_seed = inverse_kinematics(waypoint, q_seed, target_rot=target_rot)
         joint_waypoints.append(q_seed.copy())
         cart_waypoints.append(waypoint.copy())
 
@@ -189,23 +193,6 @@ def _plan_palm_waypoint_path(
         trajectories.append(QuinticTrajectory(q_start, q_end, duration, t_start=0.0))
 
     return trajectories
-
-
-def _execute_reanchored_trajectories(
-    arm: RemoteRobotArm,
-    controller: BaseController,
-    trajectories: list[QuinticTrajectory],
-    logger: Logger | None = None,
-) -> np.ndarray:
-    """Execute trajectories while re-anchoring each one at measured state."""
-    q_current = arm.get_pos()
-    for traj in trajectories:
-        q_start = arm.get_pos().copy()
-        exec_traj = QuinticTrajectory(q_start, traj.q_end, traj.duration, t_start=0.0)
-        _reset_controller_state(controller)
-        execute_trajectory(arm, controller, exec_traj, logger=logger)
-        q_current = arm.get_pos()
-    return q_current
 
 
 def _reset_controller_state(controller: BaseController) -> None:
@@ -321,7 +308,7 @@ def _execute_stacking_cycle_closed_loop(
     logger: Logger | None = None,
     hand: BarrettHandController | None = None,
 ) -> np.ndarray:
-    """Pick one object, measure its palm offset, then place its center."""
+    """Execute one stacking cycle, correcting the place pose after grasp."""
     object_center = np.asarray(object_center, dtype=float)
     stack_center = np.asarray(stack_center, dtype=float)
     shape = ITEM_DIMS[object_name]["shape"]
@@ -329,40 +316,40 @@ def _execute_stacking_cycle_closed_loop(
     palm_pick = object_center.copy()
     palm_pick[2] += _object_half_height(object_name)
 
-    pick_waypoints = [
+    pick_target_rots = [None, None] if object_center[0] > 0.85 else None
+    pick_trajs = _plan_palm_waypoint_path(arm.get_pos(), [
         palm_pick + np.array([0.0, 0.0, APPROACH_OFFSET_Z]),
         palm_pick,
-    ]
-    pick_trajs = _plan_palm_waypoint_path(arm.get_pos(), pick_waypoints)
-    q_current = _execute_reanchored_trajectories(arm, controller, pick_trajs, logger=logger)
+    ], target_rots=pick_target_rots)
+
+    q_current = arm.get_pos()
+    for traj in pick_trajs:
+        q_start = arm.get_pos().copy()
+        exec_traj = QuinticTrajectory(q_start, traj.q_end, traj.duration, t_start=0.0)
+        _reset_controller_state(controller)
+        execute_trajectory(arm, controller, exec_traj, logger=logger)
+        q_current = arm.get_pos()
 
     if hand is None:
         arm.attach(object_name)
     else:
         hand.execute_grasp(arm, hand.plan_grasp(shape))
 
-    palm_center, palm_rot = forward_kinematics(q_current)
-    object_offset_in_palm = palm_rot.T @ (object_center - palm_center)
-    object_offset_world = PALM_DOWN @ object_offset_in_palm
+    actual_palm_pos, _ = forward_kinematics(q_current)
+    planned_palm_pos = palm_pick
+    palm_tracking_offset = actual_palm_pos - planned_palm_pos
 
     _reset_controller_state(controller)
     q_current = _hold_configuration(arm, controller, q_current, GRASP_SETTLE_TIME)
 
-    lift_object_center = np.array([object_center[0], object_center[1], CLEARANCE_Z])
-    transfer_object_center = np.array([stack_center[0], stack_center[1], CLEARANCE_Z])
-    palm_lift = lift_object_center - object_offset_world
-    palm_transfer = transfer_object_center - object_offset_world
-    palm_place = stack_center - object_offset_world
-
-    place_waypoints = [
-        palm_lift,
-        palm_transfer,
-        palm_place,
-        palm_transfer,
-    ]
     place_trajs = _plan_palm_waypoint_path(
         q_current,
-        place_waypoints,
+        [
+            np.array([0.3, 0.25, CLEARANCE_Z]),
+            np.array([0.3, -0.25, CLEARANCE_Z]),
+            stack_center + palm_tracking_offset,
+            np.array([0.3, 0.25, CLEARANCE_Z]),
+        ],
         slow_indices=(0, 1),
     )
 
@@ -480,8 +467,10 @@ class PickAndPlaceTask(BaseTask):
         joint_waypoints = [q_current.copy()]
         # joint_waypoints = []
         q_seed = q_current.copy()
-        for waypoint in waypoints:
-            q_seed = inverse_kinematics(waypoint, q_seed, target_rot=PALM_DOWN)
+        relax_pick_orientation = pick_pos[0] > 0.85
+        for idx, waypoint in enumerate(waypoints):
+            target_rot = None if relax_pick_orientation and idx in (0, 1) else PALM_DOWN
+            q_seed = inverse_kinematics(waypoint, q_seed, target_rot=target_rot)
             joint_waypoints.append(q_seed.copy())
 
         cart_waypoints = [forward_kinematics(q_current)[0], *waypoints]
@@ -717,19 +706,12 @@ class StackingTask(BaseTask):
         # =====================================================================
         stack_targets = self.compute_stack_poses()
 
-        q_plan = CONFIG.robot.home_pos.copy()
-        startup_trajs = _plan_startup_egress(q_plan)
-
         q_current = _prime_arm_state(arm)
-        for traj in startup_trajs:
-            _reset_controller_state(controller)
-            execute_trajectory(arm, controller, traj, logger=logger)
-            q_current = arm.get_pos()
 
         for object_name in ("item1", "item2", "item3"):
             # Plan each item only after the previous one has actually finished.
-            # The measured grasp pose defines the object-to-palm offset used
-            # for the stack placement target.
+            # Use the measured palm pose after grasp to compensate tracking
+            # error in the stack placement target.
             object_center = ITEM_POSITIONS[object_name].copy()
             q_current = _execute_stacking_cycle_closed_loop(
                 arm,
