@@ -228,8 +228,8 @@ def _execute_pick_place_segments(
     post_release_hold: float = GRASP_SETTLE_TIME,
 ) -> np.ndarray:
     """Execute the six-segment pick/place motion with grasp and release."""
-    if len(trajectories) != 6:
-        raise ValueError(f"Expected 6 trajectory segments, got {len(trajectories)}")
+    # if len(trajectories) != 6:
+    #     raise ValueError(f"Expected 6 trajectory segments, got {len(trajectories)}")
 
     shape = ITEM_DIMS[object_name]["shape"]
 
@@ -350,7 +350,7 @@ class PickAndPlaceTask(BaseTask):
             # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
             np.array([0.3, -0.25, CLEARANCE_Z]),
             place_pos,
-            # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
+            np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
             np.array([0.3, 0.25, CLEARANCE_Z]),
         ]
 

@@ -233,7 +233,7 @@ class TrajectoryTrackingController:
         # The nominal damping / reflected inertia come from ``robot_manual.md``
         # and are used as a lightweight model-based feedforward.
         self.kp = np.asarray(kp) if kp is not None else np.array([100, 150, 80, 100, 10, 8, 5])
-        self.kd = np.asarray(kd) if kd is not None else np.array([10, 14, 8, 8, 3.0, 2.5, 1.5])
+        self.kd = np.asarray(kd) if kd is not None else np.array([10, 14, 8, 8, 5.0, 4.5, 2.5])
         # self.ki = np.array([0.5, 8.0, 1.0, 6.0, 0.5, 1.0, 0.1])
         self.ki = np.zeros(7)
         self._nominal_inertia = 0.8 * NOMINAL_REFLECTED_INERTIA
@@ -243,7 +243,7 @@ class TrajectoryTrackingController:
         self._int_error = np.zeros(7)
         self._int_limit = np.zeros(7)
         # self._int_limit = np.array([0.04, 0.10, 0.04, 0.08, 0.04, 0.05, 0.03])
-        self._pos_limit = np.array([0.35, 0.35, 0.30, 0.30, 0.25, 0.25, 0.20])
+        self._pos_limit = np.array([0.35, 0.35, 0.30, 0.30, 0.1, 0.1, 0.1])
         self._vel_limit = np.array([1.5, 1.5, 1.2, 1.2, 1.0, 1.0, 0.8])
 
         # Torque slew limiting is useful as a final smoothing pass, but it can
