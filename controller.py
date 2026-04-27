@@ -232,25 +232,28 @@ class TrajectoryTrackingController:
         # still uses the reference velocity/acceleration terms explicitly.
         # The nominal damping / reflected inertia come from ``robot_manual.md``
         # and are used as a lightweight model-based feedforward.
-        self.kp = np.asarray(kp) if kp is not None else np.array(
-            [330.0, 660.0, 210.0, 390.0, 54.0, 66.0, 15.0]
-        )
-        self.kd = np.asarray(kd) if kd is not None else np.array(
-            [14.0, 24.0, 12.0, 15.0, 5.0, 7.0, 3.0]
-        )
-        self.ki = np.array([0.5, 8.0, 1.0, 6.0, 0.5, 1.0, 0.1])
+        self.kp = np.asarray(kp) if kp is not None else np.array([100, 150, 80, 100, 10, 8, 5])
+        self.kd = np.asarray(kd) if kd is not None else np.array([10, 14, 8, 8, 5.0, 4.5, 2.5])
+        # self.ki = np.array([0.5, 8.0, 1.0, 6.0, 0.5, 1.0, 0.1])
+        self.ki = np.zeros(7)
         self._nominal_inertia = 0.8 * NOMINAL_REFLECTED_INERTIA
         self._nominal_damping = 0.6 * NOMINAL_JOINT_DAMPING
-        self._gravity_ff_scale = 0
+        self._gravity_ff_scale = 1.0
         self._dt = 0.002
         self._int_error = np.zeros(7)
         self._int_limit = np.zeros(7)
         # self._int_limit = np.array([0.04, 0.10, 0.04, 0.08, 0.04, 0.05, 0.03])
+        self._pos_limit = np.array([0.35, 0.35, 0.30, 0.30, 0.1, 0.1, 0.1])
+        self._vel_limit = np.array([1.5, 1.5, 1.2, 1.2, 1.0, 1.0, 0.8])
 
-        # Limit how quickly torque can change to avoid the velocity spikes
-        # that were tripping the simulator, while still letting the arm move.
+        # Torque slew limiting is useful as a final smoothing pass, but it can
+        # also delay gravity support and recovery from large tracking errors.
+        # Keep it available for experiments, but default to the unclipped raw
+        # controller torque before actuator saturation.
+        self._use_torque_slew_limit = False
         self._prev_tau = np.zeros(7)
         self._tau_rate_limit = np.array([12.0, 14.0, 6.0, 5.0, 2.0, 2.0, 0.5])
+        self._reset_torque_memory_at_next_step = True
 
     def compute_torque(
         self,
@@ -289,6 +292,8 @@ class TrajectoryTrackingController:
 
         pos_error = q_des - q
         vel_error = dq_des - dq
+        pos_error = np.clip(pos_error, -self._pos_limit, self._pos_limit)
+        vel_error = np.clip(vel_error, -self._vel_limit, self._vel_limit)
 
         # Use one consistent tracking law for the full motion rather than
         # switching into a separate hold-phase controller near the endpoints.
@@ -315,21 +320,44 @@ class TrajectoryTrackingController:
             + self._nominal_damping * dq_des
             + self._gravity_ff_scale * nominal_gravity_torque(q)
         )
-        # tau_raw = tau_fb + tau_ff
-        tau_raw = tau_fb
-        tau_slew_limited = np.clip(
-            tau_raw,
-            self._prev_tau - self._tau_rate_limit,
-            self._prev_tau + self._tau_rate_limit,
-        )
+        tau_raw = tau_fb + tau_ff
+
+        if self._reset_torque_memory_at_next_step:
+            self._prev_tau = np.clip(
+                self._gravity_ff_scale * nominal_gravity_torque(q),
+                -MAX_TORQUES,
+                MAX_TORQUES,
+            )
+            self._reset_torque_memory_at_next_step = False
+
+        if self._use_torque_slew_limit:
+            tau_slew_limited = np.clip(
+                tau_raw,
+                self._prev_tau - self._tau_rate_limit,
+                self._prev_tau + self._tau_rate_limit,
+            )
+        else:
+            tau_slew_limited = tau_raw.copy()
+
         tau = np.clip(tau_slew_limited, -MAX_TORQUES, MAX_TORQUES)
-        # tau = np.clip(tau_raw, -MAX_TORQUES, MAX_TORQUES)
         self._prev_tau = tau
         return tau
         # ===== END TODO 1.4 ==================================================
 
-    def reset_state(self, reset_torque_memory: bool = True) -> None:
-        """Clear accumulated error, optionally clearing torque slew memory."""
+    def reset_state(
+        self,
+        reset_torque_memory: bool = True,
+        q_init: np.ndarray | None = None,
+    ) -> None:
+        """Clear accumulated error, optionally resetting torque slew memory."""
         self._int_error[:] = 0.0
         if reset_torque_memory:
-            self._prev_tau[:] = 0.0
+            if q_init is None:
+                self._reset_torque_memory_at_next_step = True
+            else:
+                self._prev_tau = np.clip(
+                    self._gravity_ff_scale * nominal_gravity_torque(q_init),
+                    -MAX_TORQUES,
+                    MAX_TORQUES,
+                )
+                self._reset_torque_memory_at_next_step = False
