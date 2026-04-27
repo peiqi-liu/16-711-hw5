@@ -43,6 +43,8 @@ HAND_ACTUATION_TIME = 2.25           # time to close/open Barrett hand [s]
 HAND_MAX_SPREAD_RATE = 0.55          # max spread command rate [rad/s]
 HAND_MAX_CURL_RATE = 0.80            # max finger curl command rate [rad/s]
 HAND_ARM_DAMPING_SCALE = 0.35        # passive arm damping during finger motion
+HAND_HOLD_KP = np.array([30.0, 40.0, 20.0, 40.0, 5.0, 5.0, 3.0])
+HAND_HOLD_KD = np.array([3.0, 5.0, 4.0, 5.0, 2.0, 2.0, 1.0])
 STARTUP_STAGE_Y = 0.55               # safer y position before first pick [m]
 STARTUP_LIFT_EXTRA = 0.10            # extra initial lift above current ee z [m]
 
@@ -247,7 +249,7 @@ def _execute_pick_place_segments(
             if hand is None:
                 arm.attach(object_name)
             else:
-                hand.execute_grasp(arm, hand.plan_grasp(shape))
+                q_current = hand.execute_grasp(arm, hand.plan_grasp(shape))
             _reset_controller_state(controller)
             q_current = _hold_configuration(arm, controller, q_current, GRASP_SETTLE_TIME)
         elif idx == 4:
@@ -255,7 +257,7 @@ def _execute_pick_place_segments(
             if hand is None:
                 arm.detach()
             else:
-                hand.execute_release(arm)
+                q_current = hand.execute_release(arm)
             _reset_controller_state(controller)
             q_current = _hold_configuration(arm, controller, q_current, post_release_hold)
 
@@ -349,7 +351,7 @@ class PickAndPlaceTask(BaseTask):
             np.array([0.3, 0.25, CLEARANCE_Z]),
             # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
             np.array([0.3, -0.25, CLEARANCE_Z]),
-            place_pos,
+            place_pos + np.array([0, 0, 0.15]),
             np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
             np.array([0.3, 0.25, CLEARANCE_Z]),
         ]
@@ -453,7 +455,7 @@ class PickAndPlaceTask(BaseTask):
         planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
         for object_name in ("item1", "item2", "item3"):
             pick_pos = ITEM_POSITIONS[object_name].copy()
-            pick_pos[-1] += _object_half_height(object_name)
+            pick_pos[-1] += (_object_half_height(object_name) * 2)
             place_pos = place_targets[object_name]
             trajectories = self.plan_cartesian_path(pick_pos, place_pos, q_plan)
             planned_cycles.append((object_name, trajectories))
@@ -543,9 +545,9 @@ class StackingTask(BaseTask):
         item3_z = item2_top + item3_half
 
         return {
-            "item1": np.array([stack_xy[0], stack_xy[1], item1_z]),
-            "item2": np.array([stack_xy[0], stack_xy[1], item2_z]),
-            "item3": np.array([stack_xy[0], stack_xy[1], item3_z]),
+            "item1": np.array([stack_xy[0], stack_xy[1], item1_z + 0.05]),
+            "item2": np.array([stack_xy[0], stack_xy[1], item2_z + 0.05]),
+            "item3": np.array([stack_xy[0], stack_xy[1], item3_z + 0.05]),
         }
         # ===== END TODO 3.1 ==================================================
 
@@ -606,7 +608,7 @@ class StackingTask(BaseTask):
         planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
         for object_name in ("item1", "item2", "item3"):
             pick_pos = ITEM_POSITIONS[object_name].copy()
-            pick_pos[-1] += _object_half_height(object_name)
+            pick_pos[-1] += (_object_half_height(object_name) * 2)
             place_pos = stack_targets[object_name]
             base_trajectories = planner.plan_cartesian_path(pick_pos, place_pos, q_plan)
             trajectories = []
@@ -706,13 +708,14 @@ class BarrettHandController:
             "curl_3": float(np.clip(cmd["curl_3"], 0.0, 2.443)),
         }
 
-    def _move_fingers(self, arm: RemoteRobotArm, target_cmd: dict, duration: float = HAND_ACTUATION_TIME) -> None:
+    def _move_fingers(self, arm: RemoteRobotArm, target_cmd: dict, duration: float = HAND_ACTUATION_TIME) -> np.ndarray:
         """Interpolate finger targets using a slow, rate-limited motion."""
         target_cmd = self._sanitize_cmd(target_cmd)
         start_cmd = self._sanitize_cmd(self._current_cmd)
         start = clock = perf_counter()
         dt = 0.002
         cmd = start_cmd.copy()
+        q_hold = arm.get_pos().copy()
 
         while True:
             elapsed = perf_counter() - start
@@ -741,9 +744,13 @@ class BarrettHandController:
             arm.set_finger_pos(cmd["spread"], cmd["curl_1"], cmd["curl_2"], cmd["curl_3"])
             q = arm.get_pos()
             dq = arm.get_vel()
+            q_error = q_hold - q
+            q_error = np.clip(q_error, -0.02, 0.02)
+            dq = np.clip(dq, -0.03, 0.03)
             tau_support = (
-                -nominal_gravity_torque(q)
-                - HAND_ARM_DAMPING_SCALE * NOMINAL_JOINT_DAMPING * dq
+                nominal_gravity_torque(q)
+                + HAND_HOLD_KP * q_error
+                - HAND_HOLD_KD * dq
             )
             arm.set_trq(np.clip(tau_support, -MAX_TORQUES, MAX_TORQUES))
             arm.step()
@@ -757,6 +764,7 @@ class BarrettHandController:
                 sleep(idle)
 
         self._current_cmd = target_cmd
+        return arm.get_pos()
 
     def plan_grasp(self, object_shape: str) -> dict:
         """Plan finger joint targets for grasping an object of given shape.
@@ -787,22 +795,22 @@ class BarrettHandController:
         # =====================================================================
         grasps = {
             "cuboid": {
-                "spread": 1.05,
-                "curl_1": 1.65,
-                "curl_2": 1.65,
-                "curl_3": 1.50,
+                "spread": 0.5,
+                "curl_1": 1.5,
+                "curl_2": 1.5,
+                "curl_3": 1.5,
             },
             "cylinder": {
-                "spread": 1.20,
-                "curl_1": 1.35,
-                "curl_2": 1.35,
-                "curl_3": 1.20,
+                "spread": 1.2,
+                "curl_1": 1.0,
+                "curl_2": 1.0,
+                "curl_3": 1.05,
             },
             "sphere": {
-                "spread": 0.90,
-                "curl_1": 1.10,
-                "curl_2": 1.10,
-                "curl_3": 0.95,
+                "spread": 1.2,
+                "curl_1": 1.0,
+                "curl_2": 1.0,
+                "curl_3": 1.05,
             },
         }
         if object_shape not in grasps:
@@ -810,7 +818,7 @@ class BarrettHandController:
         return self._sanitize_cmd(grasps[object_shape])
         # ===== END TODO 4.1 ===================================================
 
-    def execute_grasp(self, arm: RemoteRobotArm, grasp_config: dict) -> None:
+    def execute_grasp(self, arm: RemoteRobotArm, grasp_config: dict) -> np.ndarray:
         """Close the fingers to the planned grasp configuration.
 
         Use ``arm.set_finger_pos(spread, curl_1, curl_2, curl_3)`` to
@@ -834,10 +842,10 @@ class BarrettHandController:
         #   - Use your setpoint or tracking controller to compute
         #     hold_torques for the current arm configuration.
         # =====================================================================
-        self._move_fingers(arm, grasp_config, duration=HAND_ACTUATION_TIME)
+        return self._move_fingers(arm, grasp_config, duration=HAND_ACTUATION_TIME)
         # ===== END TODO 4.2 ===================================================
 
-    def execute_release(self, arm: RemoteRobotArm) -> None:
+    def execute_release(self, arm: RemoteRobotArm) -> np.ndarray:
         """Open the fingers to release the grasped object.
 
         Use ``arm.set_finger_pos(0, 0, 0, 0)`` as the fully open target.
@@ -849,7 +857,7 @@ class BarrettHandController:
         # Open the fingers by interpolating all DOF toward 0.
         # Same gradual approach as execute_grasp().
         # =====================================================================
-        self._move_fingers(
+        return self._move_fingers(
             arm,
             {"spread": 0.0, "curl_1": 0.0, "curl_2": 0.0, "curl_3": 0.0},
             duration=HAND_ACTUATION_TIME,
