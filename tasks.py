@@ -343,15 +343,15 @@ class PickAndPlaceTask(BaseTask):
 
         waypoints = [
             pick_pos + np.array([0.0, 0.0, APPROACH_OFFSET_Z]),
-            # np.array([0.35, 0.25, CLEARANCE_Z]),
+            # np.array([0.35, 0.25, CLEARANCE_Z - 0.2]),
             pick_pos,
             # np.array([pick_pos[0], pick_pos[1], CLEARANCE_Z]),
-            np.array([0.35, 0.25, CLEARANCE_Z]),
+            np.array([0.3, 0.25, CLEARANCE_Z]),
             # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
-            np.array([0.35, -0.25, CLEARANCE_Z]),
+            np.array([0.3, -0.25, CLEARANCE_Z]),
             place_pos,
             # np.array([place_pos[0], place_pos[1], CLEARANCE_Z]),
-            np.array([0.35, 0.25, CLEARANCE_Z]),
+            np.array([0.3, 0.25, CLEARANCE_Z]),
         ]
 
         joint_waypoints = [q_current.copy()]
@@ -525,7 +525,8 @@ class StackingTask(BaseTask):
         # =====================================================================
         # Bias the stack slightly toward the far side of the drop box so the
         # placed objects are farther from the box walls and barrier-facing side.
-        stack_xy = DROP_BOX_CENTER[:2].copy() + np.array([0.0, -0.04])
+        # stack_xy = DROP_BOX_CENTER[:2].copy() + np.array([0.0, -0.04])
+        stack_xy = DROP_BOX_CENTER[:2].copy()
 
         item1_half = _object_half_height("item1")
         item2_half = _object_half_height("item2")
@@ -536,10 +537,10 @@ class StackingTask(BaseTask):
 
         # Seat upper objects a few millimetres deeper so release happens into
         # light contact instead of slightly above the support surface.
-        item2_z = item1_top + item2_half - 0.004
+        item2_z = item1_top + item2_half
         item2_top = item2_z + item2_half
 
-        item3_z = item2_top + item3_half - 0.003
+        item3_z = item2_top + item3_half
 
         return {
             "item1": np.array([stack_xy[0], stack_xy[1], item1_z]),

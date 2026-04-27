@@ -86,7 +86,7 @@ BARRIER_HALF   = np.array([0.2, 0.02, 0.15])
 BARRIER_TOP_Z  = 1.20
 
 DROP_BOX_CENTER = np.array([0.5, -0.2, 0.9])
-DROP_BOX_FLOOR_Z = 0.92  # top surface of box bottom
+DROP_BOX_FLOOR_Z = 0.95  # top surface of box bottom
 
 # Item initial positions (left side, y > 0)
 ITEM_POSITIONS = {
