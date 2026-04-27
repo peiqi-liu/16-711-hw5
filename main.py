@@ -50,6 +50,8 @@ SETTLE_TIME = 2.0                   # seconds to wait after arm.reset()
 def _make_task_tracking_controller() -> TrajectoryTrackingController:
     """Use milder gains for contact-heavy manipulation tasks."""
     controller = TrajectoryTrackingController()
+    controller._nominal_inertia = 0
+    controller._nominal_damping = 0
     controller.reset_state(reset_torque_memory=True)
     return controller
 
@@ -168,8 +170,8 @@ def run_trajectory_tracking(duration: float = 10.0) -> Logger:
 
     controller = TrajectoryTrackingController(
         # ---- set your gains here ----
-        kp = np.array([330.0, 660.0, 210.0, 390.0, 54.0, 66.0, 15.0]),
-        kd = np.array([14.0, 24.0, 12.0, 15.0, 4.0, 6.0, 1.0])
+        kp = np.array([330.0, 660.0, 210.0, 390.0, 70.0, 80.0, 40.0]),
+        kd = np.array([14.0, 10.0, 12.0, 15.0, 4.0, 4.0, 2.0])
     )
 
     # Build the two-segment trajectory
