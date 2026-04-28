@@ -534,20 +534,20 @@ class StackingTask(BaseTask):
         item2_half = _object_half_height("item2")
         item3_half = _object_half_height("item3")
 
-        item1_z = DROP_BOX_FLOOR_Z + item1_half
+        item1_z = DROP_BOX_FLOOR_Z + item1_half - 0.04
         item1_top = item1_z + item1_half
 
         # Seat upper objects a few millimetres deeper so release happens into
         # light contact instead of slightly above the support surface.
-        item2_z = item1_top + item2_half
+        item2_z = item1_top + item2_half - 0.04
         item2_top = item2_z + item2_half
 
-        item3_z = item2_top + item3_half
+        item3_z = item2_top + item3_half - 0.04
 
         return {
-            "item1": np.array([stack_xy[0], stack_xy[1], item1_z + 0.05]),
-            "item2": np.array([stack_xy[0], stack_xy[1], item2_z + 0.05]),
-            "item3": np.array([stack_xy[0], stack_xy[1], item3_z + 0.05]),
+            "item1": np.array([stack_xy[0], stack_xy[1], item1_z]),
+            "item2": np.array([stack_xy[0], stack_xy[1], item2_z]),
+            "item3": np.array([stack_xy[0] - 0.1, stack_xy[1], item3_z]),
         }
         # ===== END TODO 3.1 ==================================================
 
@@ -608,7 +608,7 @@ class StackingTask(BaseTask):
         planned_cycles: list[tuple[str, list[QuinticTrajectory]]] = []
         for object_name in ("item1", "item2", "item3"):
             pick_pos = ITEM_POSITIONS[object_name].copy()
-            pick_pos[-1] += (_object_half_height(object_name) * 2)
+            pick_pos[-1] += _object_half_height(object_name)
             place_pos = stack_targets[object_name]
             base_trajectories = planner.plan_cartesian_path(pick_pos, place_pos, q_plan)
             trajectories = []
@@ -795,22 +795,22 @@ class BarrettHandController:
         # =====================================================================
         grasps = {
             "cuboid": {
-                "spread": 0.5,
+                "spread": 0.45,
                 "curl_1": 1.5,
                 "curl_2": 1.5,
                 "curl_3": 1.5,
             },
             "cylinder": {
-                "spread": 1.2,
-                "curl_1": 1.0,
-                "curl_2": 1.0,
-                "curl_3": 1.05,
+                "spread": 0.3,
+                "curl_1": 1.5,
+                "curl_2": 1.5,
+                "curl_3": 1.5,
             },
             "sphere": {
-                "spread": 1.2,
-                "curl_1": 1.0,
-                "curl_2": 1.0,
-                "curl_3": 1.05,
+                "spread": 0.3,
+                "curl_1": 1.5,
+                "curl_2": 1.5,
+                "curl_3": 1.5,
             },
         }
         if object_shape not in grasps:
