@@ -534,15 +534,15 @@ class StackingTask(BaseTask):
         item2_half = _object_half_height("item2")
         item3_half = _object_half_height("item3")
 
-        item1_z = DROP_BOX_FLOOR_Z + item1_half - 0.04
+        item1_z = DROP_BOX_FLOOR_Z + item1_half - 0.02
         item1_top = item1_z + item1_half
 
         # Seat upper objects a few millimetres deeper so release happens into
         # light contact instead of slightly above the support surface.
-        item2_z = item1_top + item2_half - 0.04
+        item2_z = DROP_BOX_FLOOR_Z + item2_half
         item2_top = item2_z + item2_half
 
-        item3_z = item2_top + item3_half - 0.04
+        item3_z = DROP_BOX_FLOOR_Z + item3_half
 
         return {
             "item1": np.array([stack_xy[0], stack_xy[1], item1_z]),
